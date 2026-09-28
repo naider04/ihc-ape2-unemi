@@ -1,0 +1,13 @@
+{
+  "proyeccion": "equirectangular",
+  "lon_izquierda": -30.0,
+  "longitud_grados": 360.0,
+  "latitud_superior": 90.0,
+  "latitud_inferior": -90.0,
+  "imagen_px": [
+    1800,
+    920
+  ],
+  "iou": 0.5554,
+  "metodo": "maximizacion de IoU sobre Natural Earth 110m"
+}

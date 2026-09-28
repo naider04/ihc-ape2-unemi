@@ -1,0 +1,14 @@
+# Dependencias del Simulador de Posicionamiento de Aeronaves
+#
+# Instalacion (entorno virtual recomendado):
+#   python -m venv .venv
+#   .venv/bin/pip install -r requirements.txt        Linux/macOS
+#   .venv\Scripts\pip install -r requirements.txt     Windows
+#
+# La interfaz grafica usa tkinter, que viene con Python. En Linux puede faltar:
+#   sudo apt install python3-tk
+# Para regenerar los datos y las capturas hacen falta, ademas:
+#   sudo apt install ghostscript        (rasteriza el PostScript del lienzo)
+
+pillow>=10.0
+pytest>=8.0
