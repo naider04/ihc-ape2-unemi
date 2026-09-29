@@ -1,0 +1,64 @@
+{
+  "version": "1.0",
+  "prefix": "image_",
+  "targetPath": "/home/wilmerpatino/Documents/UNEMI/TIC/4th semester/Human Computer Interaction/Python S6/informe/images",
+  "savedAt": "2026-09-29T03:23:36.737Z",
+  "images": [
+    {
+      "filename": "image_001.png",
+      "source": "image_001.png",
+      "sourceType": "local-file",
+      "dimensions": "1366 × 768",
+      "description": "ventana principal"
+    },
+    {
+      "filename": "image_002.png",
+      "source": "image_002.png",
+      "sourceType": "local-file",
+      "dimensions": "341 × 192",
+      "description": "imagen de los dos aviones"
+    },
+    {
+      "filename": "image_003.png",
+      "source": "image_003.png",
+      "sourceType": "local-file",
+      "dimensions": "1366 × 768",
+      "description": "visual studio code con el archivo py"
+    },
+    {
+      "filename": "image_004.png",
+      "source": "image_004.png",
+      "sourceType": "local-file",
+      "dimensions": "1150 × 753",
+      "description": "terminal limpia durante la ejecución"
+    },
+    {
+      "filename": "image_005.png",
+      "source": "image_005.png",
+      "sourceType": "local-file",
+      "dimensions": "1062 × 607",
+      "description": "simulador corriendo con una ruta activa"
+    },
+    {
+      "filename": "image_006.png",
+      "source": "image_006.png",
+      "sourceType": "local-file",
+      "dimensions": "1600 × 737",
+      "description": "captura del grupo de trabajo 1, vsc"
+    },
+    {
+      "filename": "image_007.png",
+      "source": "image_007.png",
+      "sourceType": "local-file",
+      "dimensions": "1600 × 738",
+      "description": "captura del grupo de trabajo 2 reunión de zoom"
+    },
+    {
+      "filename": "image_008.png",
+      "source": "image_008.png",
+      "sourceType": "local-file",
+      "dimensions": "1366 × 768",
+      "description": "vista con cuadricula"
+    }
+  ]
+}

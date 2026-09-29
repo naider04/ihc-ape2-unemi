@@ -34,7 +34,7 @@ from pathlib import Path
 from tkinter import messagebox
 from typing import TYPE_CHECKING, Sequence
 
-from . import geo, tema
+from . import cuadricula, geo, tema
 from .datos import FuenteDatos, Aeropuerto, datos
 from .proyeccion import Limites, Mapa, Proyeccion, TransformacionVista
 from .telemetria import Cronometro, Medicion, Registro
@@ -81,12 +81,9 @@ MAXIMO_RESULTADOS = 8
 MS_ESPERA_BUSQUEDA = 180
 
 # --- capa de fondo en imagen --------------------------------------------
-# La imagen esta generada con la MISMA proyeccion que el mapa vectorial
-# (`herramientas/generar_fondo.py`), asi que su costa y la linea que dibuja
-# Natural Earth caen en el mismo sitio por construccion: no hay nada que
-# calibrar. Va debajo de los paises. Para ver el mismo fondo sin los colores,
-# apuntar esta constante a "referencias/mapa_1800x913.png".
-FONDO_MAPA = RAIZ / "referencias" / "fondo_1800x913.png"
+# Imagen de fondo del mapa. Se redimensiona automaticamente a TAMANO_MAPA
+# al cargar, por lo que cualquier resolucion es valida.
+FONDO_MAPA = RAIZ / "imagen.png"
 # Cuantos reescalados se guardan a la vez. Pillow necesita entre 15 y 150 ms
 # por cada uno, segun el tamano, y eso no puede ir en cada fotograma. Solo hace
 # falta al cambiar el encuadre: al arrastrar el tamano no cambia y sale de la
@@ -95,7 +92,15 @@ FONDO_MAPA = RAIZ / "referencias" / "fondo_1800x913.png"
 FONDOS_EN_CACHE = 2
 # A partir de este acercamiento la imagen de 1800 px de ancho se veria tan
 # ampliada que no compensaria: se sigue con el mar plano y las costas de vector.
-MAXIMO_AMPLIACION_FONDO = 2.0
+MAXIMO_AMPLIACION_FONDO = 8.0  # cubre hasta el zoom maximo automatico (6x)
+
+# Rotulos de la cuadricula: separacion minima en pantalla entre dos lineas de 30
+# grados. Por debajo de 60 px el borde se llena de letras pegadas y el mapa se lee
+# peor que sin rotulos, asi que las etiquetas se apagan y solo quedan las lineas.
+# Se mide en pixeles de pantalla y no en grados porque el ancho del lienzo cambia
+# con la ventana: los mismos 30 grados ocupan 150 px a 1x y 47 px en un lienzo
+# estrecho, que es justo donde molestan.
+SEPARACION_MIN_ETIQUETAS_PX = 60.0
 
 
 def tamano_fondo(kx: float, ky: float) -> tuple[int, int] | None:
@@ -180,6 +185,14 @@ class SimuladorMapa:
         self.arrastrando = False
         self._offset_arrastre = (0.0, 0.0)
         self._posicion_inicializada = False
+        # Cuadricula de meridianos y paralelos: apagada al arrancar, se enciende
+        # con el boton o con G. `ihc.cuadricula` deja el motivo en el docstring.
+        self.ver_cuadricula = False
+        # La malla en pixeles de mapa se calcula una vez: no depende de la vista.
+        self._cache_rejilla: list[cuadricula.LineaRejilla] | None = None
+        self.velocidad_sim: float = 1.0  # multiplicador de velocidad de la simulacion
+        self.auto_lat: float = 0.0
+        self.auto_lon: float = 0.0
         # --- buscador y encuadre automatico -------------------------
         self.resultados: list[Aeropuerto] = []
         self.seleccionado: Aeropuerto | None = None
@@ -249,22 +262,70 @@ class SimuladorMapa:
         barra = tk.Frame(contenedor, bg=tema.FONDO_PANEL, pady=6)
         barra.pack(fill="x")
 
-        self.boton_iniciar = self._boton(barra, "Iniciar vuelo automático", self.iniciar_vuelo)
-        self.boton_pausar = self._boton(barra, "Pausar", self.alternar_pausa, deshabilitado=True)
-        self.boton_detener = self._boton(barra, "Detener", self.detener_vuelo, deshabilitado=True)
-        self.boton_limpiar = self._boton(barra, "Reiniciar medición", self.reiniciar_medicion)
-
-        self._separador(barra)
-        tk.Label(barra, text="Origen", bg=tema.FONDO_PANEL, fg=tema.TEXTO_TENUE,
-                 font=tema.FUENTE_PEQUENA).pack(side="left")
-        self.entrada_origen = self._entrada(barra, tema.ORIGEN_POR_DEFECTO, 7)
-        tk.Label(barra, text="Destino", bg=tema.FONDO_PANEL, fg=tema.TEXTO_TENUE,
-                 font=tema.FUENTE_PEQUENA).pack(side="left", padx=(10, 0))
-        self.entrada_destino = self._entrada(barra, "MAD", 7)
-        self._boton(barra, "Planificar vuelo", self.planificar_vuelo, tipo="secundario")
-
-        self._separador(barra)
         self._boton(barra, "Ayuda", self.mostrar_ayuda, tipo="secundario")
+        self.boton_cuadricula = self._boton(barra, "Cuadrícula", self.alternar_cuadricula,
+                                            tipo="secundario")
+        self._separador(barra)
+        tk.Label(barra, text="Anim.:", bg=tema.FONDO_PANEL, fg=tema.TEXTO_TENUE,
+                 font=tema.FUENTE_PEQUENA).pack(side="left")
+        self.escala_velocidad = tk.Scale(
+            barra, from_=1, to=10, orient="horizontal", length=90, showvalue=True,
+            bg=tema.FONDO_PANEL, fg=tema.TEXTO, troughcolor=tema.FONDO_ALT,
+            highlightthickness=0, bd=0, sliderlength=14, font=tema.FUENTE_PEQUENA,
+            command=lambda v: setattr(self, "velocidad_sim", float(v)))
+        self.escala_velocidad.set(1)
+        self.escala_velocidad.pack(side="left", padx=(0, 6))
+        self._separador(barra)
+        tk.Label(barra, text="Vel. avión:", bg=tema.FONDO_PANEL, fg=tema.TEXTO_TENUE,
+                 font=tema.FUENTE_PEQUENA).pack(side="left")
+        self.entrada_velocidad = self._entrada(barra, "850", 5)
+        tk.Label(barra, text="km/h", bg=tema.FONDO_PANEL, fg=tema.TEXTO_TENUE,
+                 font=tema.FUENTE_PEQUENA).pack(side="left", padx=(2, 0))
+        # Botones de vuelo en la derecha (se empaquetan de derecha a izquierda)
+        self.boton_iniciar = self._boton(barra, "Iniciar vuelo automático", self.iniciar_vuelo,
+                                         lado="right")
+        self.boton_pausar = self._boton(barra, "Pausar", self.alternar_pausa,
+                                        deshabilitado=True, lado="right")
+        self.boton_reiniciar_vuelo = self._boton(barra, "Reiniciar vuelo",
+                                                  self.reiniciar_vuelo,
+                                                  tipo="secundario", deshabilitado=True,
+                                                  lado="right")
+
+        # --- fila de puntos de ruta -----------------------------------
+        fila_ruta = tk.Frame(contenedor, bg=tema.FONDO_PANEL, pady=4)
+        fila_ruta.pack(fill="x")
+
+        tk.Label(fila_ruta, text="Ruta:", bg=tema.FONDO_PANEL, fg=tema.TEXTO_TENUE,
+                 font=tema.FUENTE_PEQUENA).pack(side="left", padx=(10, 4))
+        self.marco_puntos = tk.Frame(fila_ruta, bg=tema.FONDO_PANEL)
+        self.marco_puntos.pack(side="left")
+        self.entradas_puntos: list[tk.Entry] = []
+        self.flechas_puntos: list[tk.Label] = []
+        for codigo in tema.RUTA_DEMOSTRACION:
+            self._crear_entrada_punto(codigo)
+        self._boton(fila_ruta, "+", self.agregar_entrada_punto, tipo="secundario")
+        self._boton(fila_ruta, "−", self.quitar_entrada_punto, tipo="secundario")
+        self._boton(fila_ruta, "Buscar ruta", self.buscar_ruta, tipo="secundario")
+
+        # --- dropdown flotante compartido para los campos de ruta -----
+        self._resultados_dropdown: list[Aeropuerto] = []
+        self._entrada_activa: tk.Entry | None = None
+        self._dropdown = tk.Toplevel(self.root)
+        self._dropdown.withdraw()
+        self._dropdown.overrideredirect(True)
+        self._dropdown.wm_attributes("-topmost", True)
+        self._dropdown.wm_transient(self.root)
+        self._lista_dropdown = tk.Listbox(
+            self._dropdown, height=7, bg=tema.FONDO_ALT, fg=tema.TEXTO,
+            font=tema.FUENTE_PEQUENA, selectbackground=tema.AUTO,
+            selectforeground=tema.FONDO, activestyle="none",
+            exportselection=False, relief="flat",
+            highlightthickness=1, highlightbackground=tema.BORDE, width=42)
+        self._lista_dropdown.pack(fill="both", expand=True)
+        self._lista_dropdown.bind("<ButtonRelease-1>", self._elegir_de_dropdown)
+        self._lista_dropdown.bind("<Return>", self._elegir_de_dropdown)
+        self._lista_dropdown.bind("<Escape>", lambda _e: self._ocultar_dropdown())
+        self._lista_dropdown.bind("<Up>", self._dropdown_subir)
 
         # --- buscador y filtro ----------------------------------------
         # Dibujar los 4.568aderos a la vez costaba 100 ms por redibujo y
@@ -280,23 +341,6 @@ class SimuladorMapa:
         self.entrada_busqueda.bind("<KeyRelease>", self._al_escribir_busqueda)
         self.entrada_busqueda.bind("<Return>", lambda _e: self._elegir_resultado())
         self.entrada_busqueda.bind("<Escape>", lambda _e: self._ocultar_resultados())
-        self._boton(fila_busqueda, "Ir", self._elegir_resultado, tipo="secundario")
-        self.boton_origen = self._boton(fila_busqueda, "Usar como origen",
-                                        lambda: self._usar_seleccion("origen"),
-                                        tipo="secundario", deshabilitado=True)
-        self.boton_destino = self._boton(fila_busqueda, "Usar como destino",
-                                         lambda: self._usar_seleccion("destino"),
-                                         tipo="secundario", deshabilitado=True)
-
-        self._separador(fila_busqueda)
-        tk.Label(fila_busqueda, text="Vista", bg=tema.FONDO_PANEL, fg=tema.TEXTO_TENUE,
-                 font=tema.FUENTE_PEQUENA).pack(side="left", padx=(0, 4))
-        self.boton_reencuadrar = tk.Button(
-            fila_busqueda, text="Encuadrar ruta", bg=tema.FONDO_ALT, fg=tema.TEXTO,
-            activebackground=tema.BORDE, activeforeground=tema.TEXTO,
-            font=tema.FUENTE_PEQUENA, relief="flat", cursor="hand2",
-            command=self.reencuadrar_ruta)
-        self.boton_reencuadrar.pack(side="left")
 
         self.lista_resultados = tk.Listbox(
             fila_busqueda, height=5, bg=tema.FONDO_ALT, fg=tema.TEXTO,
@@ -323,7 +367,8 @@ class SimuladorMapa:
         paneles.pack(fill="x")
         self.panel_auto = self._panel(paneles, "VUELO AUTOMATICO", tema.AUTO)
         self.panel_manual = self._panel(paneles, "CONTROL MANUAL", tema.MANUAL)
-        self.panel_comparativa = self._panel(paneles, "COMPARATIVA DE EFICIENCIA", tema.EXITO)
+        self._boton(self.panel_manual["marco"], "Reiniciar medición",
+                    self.reiniciar_medicion, tipo="secundario")
 
         # --- consola -------------------------------------------------
         self.consola = tk.Label(contenedor, text="", anchor="w", bg=tema.FONDO_PANEL,
@@ -352,7 +397,8 @@ class SimuladorMapa:
         return boton
 
     def _boton(self, padre: tk.Widget, texto: str, comando, tipo: str = "primario",
-               deshabilitado: bool = False, activo: bool = False) -> tk.Button:
+               deshabilitado: bool = False, activo: bool = False,
+               lado: str = "left") -> tk.Button:
         fondo, tinta = ((tema.AUTO_OSCURO, "#ffe0b2") if tipo == "primario"
                         else (tema.FONDO_ALT, tema.TEXTO))
         boton = tk.Button(
@@ -364,7 +410,7 @@ class SimuladorMapa:
             boton.configure(state="disabled", bg=tema.FONDO_ALT, fg=tema.TEXTO_TENUE)
         if activo:
             boton.configure(relief="sunken", bg=tema.BORDE)
-        boton.pack(side="left", padx=3)
+        boton.pack(side=lado, padx=3)
         return boton
 
     def _entrada(self, padre: tk.Widget, valor: str, ancho: int) -> tk.Entry:
@@ -394,11 +440,81 @@ class SimuladorMapa:
         """Redibuja el lienzo completo y vuelve a enlazar los eventos del avion."""
         self.lienzo.delete("todo")
         self._dibujar_fondo()
+        if self.ver_cuadricula:
+            self._dibujar_cuadricula()
         self._dibujar_paises()
         self._dibujar_ruta()
         self._dibujar_aeropuertos()
         self._dibujar_aviones()
+        if self.ver_cuadricula:
+            self._dibujar_esfera()
         self._enlazar_eventos_avion()
+
+    def _dibujar_cuadricula(self) -> None:
+        """Meridianos y paralelos de la proyeccion, con su rotulo.
+
+        Encaja entre el mar y los paises, no al final: la malla es una
+        referencia de coordenadas y si fuera de la costa competiria por la misma
+        linea. Lo que no puede es tapar el mapa, asi que va con trazo fino y con
+        la jerarquia habitual de cartografia: continua cada 30 grados, punteada
+        cada 15.
+
+        Los puntos se guardan en pixeles de mapa, que no cambian con la vista, y
+        en cada fotograma solo se aplica la transformada `pantalla = x*k + c`. Es
+        el mismo truco que usa `_dibujar_paises` con los contornos, y por el
+        mismo motivo: convertir 2.300 puntos en cada redibujo costaria mas que
+        dibujarlos.
+        """
+        if self._cache_rejilla is None:
+            proyeccion = self.mapa.proyeccion
+            self._cache_rejilla = cuadricula.rejilla(proyeccion, proyeccion.limites)
+        kx, ky, cx, cy = self.mapa.coeficientes_pantalla()
+        copias = self.mapa.copias_de_x(0.0, self.mapa.ancho_mundo)
+        # Las lineas se dibujan siempre, sean cuales sean: son finas y no
+        # ensucian. Lo que se apaga al alejar es el rotulo, que a 30 grados por
+        # debajo de 60 px deja de distinguirse de la linea que rotula.
+        paso_px = (self.mapa.ancho_mundo / self.mapa.proyeccion.limites.ancho
+                   * cuadricula.PASO_LON) * kx
+        con_etiquetas = paso_px >= SEPARACION_MIN_ETIQUETAS_PX
+        for linea in self._cache_rejilla:
+            # Un paralelo es una horizontal en la pantalla: si cae fuera del
+            # alto del lienzo no hay nada que dibujar ni que rotular.
+            y_primero = linea.puntos[0][1] * ky + cy
+            if linea.eje == "lat" and not (0.0 <= y_primero <= self.alto_lienzo):
+                continue
+            for vuelta in copias:
+                puntos = [(px * kx + cx + vuelta * kx, py * ky + cy) for px, py in linea.puntos]
+                if self._fuera_de_pantalla(puntos):
+                    continue
+                menor = linea.clase == "menor"
+                self.lienzo.create_line(
+                    *[c for punto in puntos for c in punto],
+                    fill=tema.REJILLA_MENOR if menor else tema.REJILLA_MAYOR,
+                    width=1, dash=(3, 5) if menor else (),
+                    tags=("todo", "cuadricula"))
+                if con_etiquetas and not menor:
+                    self._etiqueta_cuadricula(linea, puntos[0])
+
+    def _etiqueta_cuadricula(self, linea: cuadricula.LineaRejilla,
+                            primero: tuple[float, float]) -> None:
+        """Rotula un meridiano en el borde superior y un paralelo en el izquierdo.
+
+        El borde se toma del mapa y se recorta a la ventana: al desplazar la
+        vista el mapa puede quedarse a medias fuera, y el rotulo tiene que
+        pegarse al borde que se ve o aparecer en mitad del oceano.
+        """
+        x, y = primero
+        x0, y0, ancho, alto = self.mapa.rect_mapa
+        if linea.eje == "lon":
+            if not (0.0 <= x <= self.ancho_lienzo):
+                return
+            self._texto(x, min(max(y0, 4.0), self.alto_lienzo - 4.0),
+                        cuadricula.texto_etiqueta(linea), tema.REJILLA_ETIQUETA,
+                        tema.FUENTE_PEQUENA, "cuadricula")
+        elif 0.0 <= y <= self.alto_lienzo:
+            self._texto(min(max(x0, 4.0), self.ancho_lienzo - 4.0), y,
+                        cuadricula.texto_etiqueta(linea), tema.REJILLA_ETIQUETA,
+                        tema.FUENTE_PEQUENA, "cuadricula", ancla="w")
 
     def _dibujar_fondo(self) -> None:
         """Fondo del lienzo: el oceano, el borde de la lamina y la capa de imagen.
@@ -476,7 +592,7 @@ class SimuladorMapa:
         with Image.open(FONDO_MAPA) as abierta:
             imagen = abierta.convert("RGB")
         if imagen.size != TAMANO_MAPA:
-            return False
+            imagen = imagen.resize(TAMANO_MAPA, Image.LANCZOS)
         self._fondo_original = imagen
         return True
 
@@ -617,14 +733,8 @@ class SimuladorMapa:
         return tramos
 
     def _dibujar_aeropuertos(self) -> None:
-        """Dibuja unicamente el origen y el destino de la ruta.
-
-        Antes se dibujaban hasta 1.171 aeropuertos grandes y el buscador anadia
-        sus resultados. Cada etiqueta con halo cuesta cinco elementos del
-        lienzo, asi que la decision se tomo por fluidez: con el encuadre
-        automatico la vista ya se ajusta a los dos puntos de la ruta y el resto
-        solo anadia elementos sin aportar informacion.
-        """
+        """Dibuja los aeropuertos de la ruta y los resultados de busqueda (top 5)."""
+        # --- puntos de la ruta -----------------------------------------
         for aeropuerto in self._aeropuertos_visibles():
             x, y = self.mapa.a_pantalla(aeropuerto.lat, aeropuerto.lon, repetir=True)
             es_origen = bool(self.ruta) and aeropuerto.iata == self.ruta[0].iata
@@ -636,6 +746,34 @@ class SimuladorMapa:
             etiqueta = f"{aeropuerto.iata} · {'origen' if es_origen else 'destino'}"
             self._texto(x, y + r + 5, etiqueta, tema.EXITO, tema.FUENTE_PEQUENA,
                         "aeropuerto")
+        # --- resultados del buscador (top 5) ---------------------------
+        iatas_ruta = {a.iata for a in self.ruta}
+        x0, y0, ancho, alto = self.mapa.rect_mapa
+        for i, aeropuerto in enumerate(self.resultados[:5], start=1):
+            if aeropuerto.iata in iatas_ruta:
+                continue
+            x, y = self.mapa.a_pantalla(aeropuerto.lat, aeropuerto.lon, repetir=True)
+            if not (x0 - 12 <= x <= x0 + ancho + 12 and y0 - 12 <= y <= y0 + alto + 12):
+                continue
+            r = tema.TAMANO_PUNTO_AEROPUERTO + 0.5
+            self.lienzo.create_oval(
+                x - r, y - r, x + r, y + r,
+                fill=tema.ALERTA, outline=tema.FONDO, tags=("todo", "aeropuerto"))
+            self._texto(x, y + r + 5,
+                        f"{i}. {aeropuerto.iata}",
+                        tema.ALERTA, tema.FUENTE_ETIQUETA, "aeropuerto")
+        # --- aeropuerto seleccionado (clic en lista) -------------------
+        sel = self.seleccionado
+        if sel is not None and sel.iata not in iatas_ruta:
+            x, y = self.mapa.a_pantalla(sel.lat, sel.lon, repetir=True)
+            r = tema.TAMANO_PUNTO_AEROPUERTO + 3
+            self.lienzo.create_oval(
+                x - r, y - r, x + r, y + r,
+                fill=tema.TEXTO_TITULO, outline=tema.AUTO, width=1.5,
+                tags=("todo", "aeropuerto"))
+            self._texto(x, y + r + 5,
+                        f"{sel.iata} · {sel.ciudad}",
+                        tema.TEXTO_TITULO, tema.FUENTE_PEQUENA, "aeropuerto")
 
     def _aeropuertos_visibles(self) -> list[Aeropuerto]:
         """Solo se dibujan el origen y el destino de la ruta.
@@ -696,6 +834,71 @@ class SimuladorMapa:
         self.lienzo.create_text(x, y, text=texto, fill=color, font=fuente, anchor=ancla,
                                 tags=("todo", etiqueta))
 
+    # --- el globo de la esquina: la misma malla, pero sobre la esfera ----
+    def _dibujar_esfera(self) -> None:
+        """Miniatura de la esfera, en la esquina inferior derecha.
+
+        Es la otra mitad de la cuadrícula. El mapa es el cilindro desarrollado, y
+        ahi los meridianos y los paralelos son rectos; aqui son arcos, porque la
+        rejilla se dibuja con la proyeccion ortografica. Ver las dos a la vez es
+        lo que explica la deformacion sin tener que decirla: el mapa es el
+        cilindro desarrollado y el globo es la esfera, y las latitudes altas
+        aparecen estiradas en el primero.
+
+        Va en un globo aparte y no superpuesta al mapa a proposito. Dibujada
+        encima, la curva de un meridiano caeria a grados de la costa que dice
+        representar y pareceria un error de dibujo, no la proyeccion de la esfera.
+
+        El globo se centra en lo que se esta mirando (`centro_de_vista`), de modo
+        que gira al desplazar el mapa, y los dos puntos de la ruta se marcan
+        encima cuando caen en la cara visible.
+        """
+        sitio = cuadricula.colocar_esfera(self.ancho_lienzo, self.alto_lienzo,
+                                          self.mapa.rect_mapa)
+        if sitio is None:
+            return
+        cx, cy, radio = sitio
+        centro = (cx, cy)
+        lat0, lon0 = cuadricula.centro_de_vista(self.mapa)
+        # El disco va primero y es opaco: la esfera tiene que leerse por encima
+        # de los paises, no mezclarse con ellos.
+        self.lienzo.create_oval(cx - radio, cy - radio, cx + radio, cy + radio,
+                                fill=tema.ESFERA_FONDO, outline=tema.ESFERA_BORDE,
+                                width=1, tags=("todo", "esfera"))
+        for linea in cuadricula.rejilla_esfera(lat0, lon0, radio, centro):
+            fuerte = linea.clase in ("ecuator", "central")
+            self.lienzo.create_line(
+                *[c for punto in linea.puntos for c in punto],
+                fill=tema.ESFERA_MALLA_FUERTE if fuerte else tema.ESFERA_MALLA,
+                width=1, tags=("todo", "esfera"))
+        self._puntos_en_la_esfera(cx, cy, radio, centro, lat0, lon0)
+        self.lienzo.create_text(cx, cy + radio + 9, text="esfera · ortográfica",
+                                fill=tema.TEXTO_TENUE, font=tema.FUENTE_PEQUENA,
+                                tags=("todo", "esfera"))
+
+    def _puntos_en_la_esfera(self, cx: float, cy: float, radio: float, centro: tuple[float, float],
+                             lat0: float, lon0: float) -> None:
+        """Marca sobre el globo el centro de la vista y los dos puntos de ruta.
+
+        El centro de la vista es la cruz pequena: dice hacia donde mira el mapa
+        plano, y por eso el globo se entiende como "la parte de la esfera que
+        estas viendo". Origen y destino mantienen sus colores, que ya son el
+        codigo de posicion del avion, para no obligar a mirar la leyenda otra vez.
+        """
+        self.lienzo.create_line(cx - 4, cy, cx + 4, cy, fill=tema.TEXTO,
+                                tags=("todo", "esfera"))
+        self.lienzo.create_line(cx, cy - 4, cx, cy + 4, fill=tema.TEXTO,
+                                tags=("todo", "esfera"))
+        for indice, aeropuerto in enumerate(self._aeropazgos_destacados()):
+            punto = cuadricula.ortografica(aeropuerto.lat, aeropuerto.lon,
+                                          lat0, lon0, radio, centro)
+            if punto is None:
+                continue
+            color = tema.EXITO if indice == 0 else tema.RUTA_PLANIFICADA
+            self.lienzo.create_oval(punto[0] - 2, punto[1] - 2, punto[0] + 2, punto[1] + 2,
+                                    fill=color, outline=tema.ESFERA_FONDO,
+                                    tags=("todo", "esfera"))
+
     # --- primitivas graficas: los dos aviones -------------------------
     @staticmethod
     def _geometria_avion(x: float, y: float, radio: float,
@@ -744,11 +947,11 @@ class SimuladorMapa:
             punto = geo.punto_sobre_arco(origen.lat, origen.lon, 90.0, 900.0)
         else:
             punto = (self.manual_lat, self.manual_lon)
-        x, y = self.mapa.a_pantalla(punto.lat, punto.lon)
+        x, y = self.mapa.a_pantalla(punto.lat, punto.lon, repetir=True)
         self.avion_auto, self.area_auto = self._crear_avion(x, y, tema.AUTO, tema.AUTO, 90)
         self._texto(x, y + 16, "AUTO", tema.AUTO, tema.FUENTE_ETIQUETA, "avion")
 
-        mx, my = self.mapa.a_pantalla(self.manual_lat, self.manual_lon)
+        mx, my = self.mapa.a_pantalla(self.manual_lat, self.manual_lon, repetir=True)
         self.avion_manual, self.area_manual = self._crear_avion(
             mx, my, tema.MANUAL, tema.FONDO_PANEL, 90)
         self._texto(mx, my + 16, "MANUAL", tema.MANUAL, tema.FUENTE_ETIQUETA, "avion")
@@ -775,37 +978,44 @@ class SimuladorMapa:
             self.lienzo.tag_bind(etiqueta, "<B1-Motion>", self.arrastrar)
             self.lienzo.tag_bind(etiqueta, "<ButtonRelease-1>", self.terminar_arrastre)
 
-    def planificar_vuelo(self) -> None:
-        """Construye la ruta origen -> destino con los valores de los dos campos."""
-        origen = self.fuente.buscar(self.entrada_origen.get(), 1)
-        destino = self.fuente.buscar(self.entrada_destino.get(), 1)
-        if not origen or not destino:
-            self._consola("Aeropuerto no reconocido. Use el codigo IATA (UIO, MAD, JFK).",
-                          error=True)
+    def buscar_ruta(self) -> None:
+        """Lee los campos de puntos, valida los códigos IATA y construye la ruta."""
+        codigos = [e.get().strip().upper() for e in self.entradas_puntos]
+        codigos = [c for c in codigos if c]  # descartar campos vacíos
+        if len(codigos) < 2:
+            self._consola("Introduce al menos dos códigos de aeropuerto.", error=True)
             return
-        if origen[0].iata == destino[0].iata:
-            self._consola("El origen y el destino deben ser distintos.", error=True)
+        puntos: list[Aeropuerto] = []
+        for codigo in codigos:
+            resultado = self.fuente.buscar(codigo, 1)
+            if not resultado:
+                self._consola(f"Código no reconocido: {codigo}. Usa el código IATA (UIO, MAD, JFK).",
+                              error=True)
+                return
+            puntos.append(resultado[0])
+        iatas = [p.iata for p in puntos]
+        if len(iatas) != len(set(iatas)):
+            self._consola("Hay puntos duplicados en la ruta.", error=True)
             return
         self.detener_vuelo()
-        self.ruta = [origen[0], destino[0]]
+        self.ruta = puntos
         self.segmento = 0
         self.progreso = 0.0
-        lat, lon = geo.punto_sobre_arco(origen[0].lat, origen[0].lon, 90.0, 900.0)
+        origen = self.ruta[0]
+        lat, lon = geo.punto_sobre_arco(origen.lat, origen.lon, 90.0, 900.0)
         self.manual_lat, self.manual_lon = lat, lon
         self.manual_ultima_pos = (lat, lon)
         self.distancia_manual_km = 0.0
         self.acciones = 0
         self.correcciones = 0
         self.rumbo_manual = 90.0
-        # El encuadre automatico ocurre al planificar: el usuario define dos
-        # puntos y la vista se ajusta sola, sin rueda ni arrastre.
         escala = self.mapa.encuadrar_puntos([(a.lat, a.lon) for a in self.ruta],
                                              ESCALA_MAXIMA_AUTOMATICA)
         self._dibujar_todo()
         self._actualizar_paneles()
-        distancia = geo.haversine(origen[0].lat, origen[0].lon, destino[0].lat, destino[0].lon)
-        self._consola(f"Ruta planificada {origen[0].iata} → {destino[0].iata} · "
-                      f"{geo.formatear_distancia(distancia)} de gran circulo · "
+        distancia = geo.longitud_ruta([(a.lat, a.lon) for a in self.ruta])
+        paradas = " → ".join(a.iata for a in self.ruta)
+        self._consola(f"Ruta: {paradas} · {geo.formatear_distancia(distancia)} · "
                       f"encuadrada en {escala:.2f}x.")
 
     def _poblar_ruta_demo(self) -> None:
@@ -856,6 +1066,20 @@ class SimuladorMapa:
         self._activar_controles(False)
         self._actualizar_paneles()
 
+    def reiniciar_vuelo(self) -> None:
+        """Vuelve el avion automatico al primer punto sin borrar la ruta."""
+        if not self.ruta or len(self.ruta) < 2:
+            self._consola("No hay ruta definida.", error=True)
+            return
+        self.detener_vuelo()
+        self.segmento = 0
+        self.progreso = 0.0
+        self.auto_lat = self.ruta[0].lat
+        self.auto_lon = self.ruta[0].lon
+        self._dibujar_todo()
+        self._actualizar_paneles()
+        self._consola(f"Vuelo reiniciado en {self.ruta[0].iata}.")
+
     def reiniciar_medicion(self) -> None:
         self.detener_vuelo()
         self.registro.reiniciar()
@@ -866,6 +1090,27 @@ class SimuladorMapa:
         self.manual_ultima_pos = (self.manual_lat, self.manual_lon)
         self._actualizar_paneles()
         self._consola("Mediciones reiniciadas.")
+
+    def alternar_cuadricula(self) -> None:
+        """Enciende o apaga la rejilla de meridianos y paralelos (boton o G).
+
+        El boton queda hundido mientras la capa esta puesta, que es la misma
+        pista de estado que usan los demas controles: el color no es el unico
+        codigo, y un boton que parece pulsado es mas rapido de leer que un
+        boton con otro texto.
+
+        La capa nace apagada porque compite con la costa de la imagen de fondo, y
+        decidir que se veria mejor por defecto es una llamada de diseño, no un
+        detalle: con la cuadrícula puesta el mapa se lee como un mapa
+        coordenado, y sin ella como un mapa para orientarse.
+        """
+        self.ver_cuadricula = not self.ver_cuadricula
+        self.boton_cuadricula.configure(
+            relief="sunken" if self.ver_cuadricula else "flat",
+            bg=tema.BORDE if self.ver_cuadricula else tema.FONDO_ALT)
+        self._dibujar_todo()
+        self._consola("Cuadrícula " + ("visible: malla de 30° y globo." if self.ver_cuadricula
+                                       else "oculta."))
 
     def mostrar_ayuda(self) -> None:
         messagebox.showinfo(
@@ -885,9 +1130,14 @@ class SimuladorMapa:
             "  El acercamiento es automatico: al planificar la ruta, la\n"
             "  vista se encuadra sola para que origen y destino se vean.\n"
             "  R lo recalcula cuando se quiera.\n"
-            "  Solo se dibujan el origen y el destino.\n\n"
+            "  Solo se dibujan el origen y el destino.\n"
+            "  «Cuadrícula» (o G) superpone los meridianos y paralelos cada\n"
+            "  30 grados y rotula 0°, 30°, 60°… En la esquina aparece la\n"
+            "  esfera con la misma malla, curvada: el mapa es esa esfera\n"
+            "  desplegada, y en el desplegado las lineas salen rectas.\n\n"
             "OTRAS TECLAS\n"
-            "  Esc  detener el vuelo        R  encuadrar la ruta\n\n"
+            "  Esc  detener el vuelo        R  encuadrar la ruta\n"
+            "  G    cuadrícula on/off\n\n"
             "Las distancias se calculan con haversine sobre las coordenadas\n"
             "reales de cada aeropuerto, no sobre pixeles del monitor.")
 
@@ -917,20 +1167,27 @@ class SimuladorMapa:
         if self.resultados:
             self.lista_resultados.pack(side="left", padx=(10, 10), fill="both", expand=True)
             self.lista_resultados.selection_set(0)
+            # Encuadra para mostrar los resultados junto con la ruta actual
+            puntos = [(a.lat, a.lon) for a in self.ruta]
+            puntos += [(a.lat, a.lon) for a in self.resultados[:5]]
+            self.mapa.encuadrar_puntos(puntos, ESCALA_MAXIMA_AUTOMATICA)
         else:
             self.lista_resultados.pack_forget()
         self._dibujar_todo()
         if self.resultados:
-            self._consola(f"{len(self.resultados)} coincidencias para «{texto}». "
-                          f"Elija una y pulse Ir.")
+            self._consola(f"{len(self.resultados)} coincidencias para «{texto}».")
         else:
-            self._consola(f"Sin coincidencias para «{texto}». Pruebe el nombre de la "
-                          f"ciudad, el pais o el codigo IATA.", error=True)
+            self._consola(f"Sin coincidencias para «{texto}». Pruebe nombre, ciudad o IATA.",
+                          error=True)
 
     def _ocultar_resultados(self) -> None:
         self.resultados = []
         self.lista_resultados.delete(0, "end")
         self.lista_resultados.pack_forget()
+        # Vuelve al encuadre de la ruta cuando se limpia la busqueda
+        if self.ruta:
+            self.mapa.encuadrar_puntos([(a.lat, a.lon) for a in self.ruta],
+                                       ESCALA_MAXIMA_AUTOMATICA)
         self._dibujar_todo()
 
     def _elegir_resultado(self) -> None:
@@ -945,11 +1202,6 @@ class SimuladorMapa:
 
     def seleccionar_aeropuerto(self, aeropuerto: Aeropuerto) -> None:
         self.seleccionado = aeropuerto
-        activo = "normal" if aeropuerto else "disabled"
-        self.boton_origen.configure(state=activo)
-        self.boton_destino.configure(state=activo)
-        # Si el aeropuerto encontrado forma parte de la ruta, se reencuadra
-        # para que origen y destino queden visibles a la vez.
         if any(a.iata == aeropuerto.iata for a in self.ruta):
             self.mapa.encuadrar_puntos([(a.lat, a.lon) for a in self.ruta],
                                        ESCALA_MAXIMA_AUTOMATICA)
@@ -957,19 +1209,146 @@ class SimuladorMapa:
         self._consola(f"Aeropuerto localizado: {aeropuerto.etiqueta} · {aeropuerto.pais} "
                       f"· {aeropuerto.lat:+.3f}, {aeropuerto.lon:+.3f}")
 
-    def _usar_seleccion(self, campo: str) -> None:
-        if self.seleccionado is None:
-            self._consola("Busque primero un aeropuerto.", error=True)
+    def _crear_entrada_punto(self, codigo: str = "") -> tk.Entry:
+        """Crea un campo de texto con búsqueda en vivo para un punto de la ruta."""
+        if self.entradas_puntos:  # flecha entre campos
+            flecha = tk.Label(self.marco_puntos, text="→", bg=tema.FONDO_PANEL,
+                              fg=tema.TEXTO_TENUE, font=tema.FUENTE_TEXTO)
+            flecha.pack(side="left", padx=2)
+            self.flechas_puntos.append(flecha)
+        entry = tk.Entry(
+            self.marco_puntos, width=7, font=tema.FUENTE_MONO, justify="center",
+            bg=tema.FONDO_ALT, fg=tema.TEXTO, insertbackground=tema.TEXTO,
+            relief="flat", highlightthickness=1, highlightbackground=tema.BORDE)
+        entry.insert(0, codigo.upper())
+        entry.pack(side="left", padx=4, ipady=3)
+        entry.bind("<Return>", lambda _e: self.buscar_ruta())
+        entry.bind("<KeyRelease>",
+                   lambda e, ent=entry: self._al_escribir_en_punto(ent, e))
+        entry.bind("<FocusOut>",
+                   lambda _e: self.root.after(150, self._ocultar_dropdown))
+        entry.bind("<Down>", lambda _e: self._foco_a_dropdown())
+        self.entradas_puntos.append(entry)
+        return entry
+
+    def agregar_entrada_punto(self) -> None:
+        """Añade un nuevo campo de punto vacío a la fila de ruta."""
+        entry = self._crear_entrada_punto()
+        entry.focus_set()
+        self._consola(f"Punto {len(self.entradas_puntos)} añadido — escribe el código IATA.")
+
+    def quitar_entrada_punto(self) -> None:
+        """Quita el último campo de punto (mínimo 2)."""
+        if len(self.entradas_puntos) <= 2:
+            self._consola("La ruta necesita al menos dos puntos.", error=True)
             return
-        entrada = self.entrada_origen if campo == "origen" else self.entrada_destino
-        entrada.delete(0, "end")
-        entrada.insert(0, self.seleccionado.iata)
-        self._consola(f"{campo.capitalize()} fijado en {self.seleccionado.iata} "
-                      f"({self.seleccionado.ciudad}).")
+        self.entradas_puntos.pop().destroy()
+        if self.flechas_puntos:
+            self.flechas_puntos.pop().destroy()
+        self._consola(f"Punto eliminado. Quedan {len(self.entradas_puntos)} puntos.")
+
+    # ------------------------------------------------------------------
+    # Búsqueda en vivo en los campos de ruta
+    # ------------------------------------------------------------------
+    def _al_escribir_en_punto(self, entry: tk.Entry, evento) -> None:
+        """Busca aeropuertos mientras el usuario escribe; muestra el dropdown."""
+        tecla = (evento.keysym or "").lower()
+        if tecla in ("return", "down", "up", "escape", "tab"):
+            return
+        texto = entry.get().strip()
+        if len(texto) < 1:
+            self._ocultar_dropdown()
+            return
+        resultados = self.fuente.buscar(texto, 8)
+        if resultados:
+            self._mostrar_dropdown(entry, resultados)
+        else:
+            self._ocultar_dropdown()
+
+    def _mostrar_dropdown(self, entry: tk.Entry,
+                          resultados: list[Aeropuerto]) -> None:
+        """Posiciona y rellena el dropdown bajo el campo activo."""
+        self._entrada_activa = entry
+        self._resultados_dropdown = resultados
+        self._lista_dropdown.delete(0, "end")
+        for a in resultados:
+            self._lista_dropdown.insert("end", f"{a.iata}  –  {a.ciudad}, {a.pais}")
+        entry.update_idletasks()
+        x = entry.winfo_rootx()
+        y = entry.winfo_rooty() + entry.winfo_height() + 2
+        ancho = max(300, entry.winfo_width() * 5)
+        alto = min(len(resultados), 7) * 20 + 6
+        self._dropdown.geometry(f"{ancho}x{alto}+{x}+{y}")
+        self._dropdown.deiconify()
+        self._dropdown.lift()
+
+    def _ocultar_dropdown(self) -> None:
+        self._dropdown.withdraw()
+        self._entrada_activa = None
+        self._resultados_dropdown = []
+
+    def _foco_a_dropdown(self) -> None:
+        """Mueve el foco al dropdown si hay resultados."""
+        if self._resultados_dropdown:
+            self._lista_dropdown.focus_set()
+            self._lista_dropdown.selection_set(0)
+
+    def _dropdown_subir(self, evento) -> str | None:
+        """Cuando el cursor sube mas alla del primer item, devuelve el foco al campo."""
+        sel = self._lista_dropdown.curselection()
+        if sel and sel[0] == 0 and self._entrada_activa is not None:
+            self._entrada_activa.focus_set()
+            return "break"  # evita que el Listbox siga procesando la tecla
+        return None
+
+    def _elegir_de_dropdown(self, _evento=None) -> None:
+        """Rellena el campo activo con el aeropuerto seleccionado."""
+        sel = self._lista_dropdown.curselection()
+        if not sel or not self._resultados_dropdown:
+            return
+        aeropuerto = self._resultados_dropdown[sel[0]]
+        if self._entrada_activa is not None:
+            self._entrada_activa.delete(0, "end")
+            self._entrada_activa.insert(0, aeropuerto.iata)
+            self._entrada_activa.focus_set()
+        self._ocultar_dropdown()
+        self._consola(f"{aeropuerto.iata}  {aeropuerto.etiqueta} · {aeropuerto.pais}")
 
     # ==================================================================
     # DOMINIO: vuelo automatico
     # ==================================================================
+    def _distancia_restante(self) -> float:
+        """Kilometros pendientes desde la posicion actual del avion automatico."""
+        if not self.vuelo_en_curso or len(self.ruta) < 2:
+            return 0.0
+        origen = self.ruta[self.segmento]
+        destino = self.ruta[self.segmento + 1]
+        tramo_km = geo.haversine(origen.lat, origen.lon, destino.lat, destino.lon)
+        restante = tramo_km * (1.0 - min(1.0, self.progreso))
+        for i in range(self.segmento + 1, len(self.ruta) - 1):
+            restante += geo.haversine(
+                self.ruta[i].lat, self.ruta[i].lon,
+                self.ruta[i + 1].lat, self.ruta[i + 1].lon)
+        return max(0.0, restante)
+
+    def _velocidad_avion_kmh(self) -> float:
+        """Lee el campo de velocidad del avión; devuelve 850 si el valor no es valido."""
+        try:
+            v = float(self.entrada_velocidad.get())
+            return max(50.0, min(50_000.0, v))
+        except ValueError:
+            return 850.0
+
+    def _tiempo_estimado(self, distancia_km: float) -> str:
+        """Tiempo de vuelo realista a partir de distancia y velocidad configurada."""
+        v = self._velocidad_avion_kmh()
+        if v <= 0 or distancia_km <= 0:
+            return "—"
+        horas = distancia_km / v
+        h = int(horas)
+        m = int((horas - h) * 60)
+        return f"{h} h {m:02d} min"
+
     def _programar_tick(self) -> None:
         if self._id_tick is not None:
             self.root.after_cancel(self._id_tick)
@@ -983,8 +1362,8 @@ class SimuladorMapa:
         origen = self.ruta[self.segmento]
         destino = self.ruta[self.segmento + 1]
         tramo_km = geo.haversine(origen.lat, origen.lon, destino.lat, destino.lon)
-        duracion = max(1.5, tramo_km / 320.0)
-        self.progreso += tema.MS_PASO_VUELO / 1000.0 / duracion
+        duracion = max(1.5, tramo_km / self._velocidad_avion_kmh())
+        self.progreso += tema.MS_PASO_VUELO / 1000.0 / duracion * self.velocidad_sim
 
         while self.progreso >= 1.0 and self.segmento < len(self.ruta) - 2:
             self.progreso -= 1.0
@@ -993,9 +1372,12 @@ class SimuladorMapa:
 
         punto = geo.interpolar((origen.lat, origen.lon), (destino.lat, destino.lon),
                                min(1.0, self.progreso))
+        self.auto_lat, self.auto_lon = punto.lat, punto.lon
         rumbo = geo.rumbo_inicial(punto.lat, punto.lon, destino.lat, destino.lon)
-        x, y = self.mapa.a_pantalla(punto.lat, punto.lon)
+        x, y = self.mapa.a_pantalla(punto.lat, punto.lon, repetir=True)
         self._ubicar_avion(self.avion_auto, self.area_auto, x, y, rumbo)
+
+        self._programar_refresco()  # actualiza paneles en cada tick
 
         if self.progreso >= 1.0:
             self.vuelo_en_curso = False
@@ -1022,6 +1404,9 @@ class SimuladorMapa:
     # ==================================================================
     def _al_teclar(self, evento: tk.Event) -> str | None:
         tecla = (evento.keysym or "").lower()
+        if tecla == "g":
+            self.alternar_cuadricula()
+            return "break"
         if tecla in TECLAS_MOVIMIENTO:
             if tecla not in self.teclas_pulsadas:
                 self.acciones += 1
@@ -1030,34 +1415,7 @@ class SimuladorMapa:
                 self.reloj_manual.iniciar()
                 self._bucle_manual()
             return "break"
-        if tecla == "r":
-            self.reencuadrar_ruta()
-            return "break"
         return None
-
-    def reencuadrar_ruta(self, anunciar: bool = True) -> None:
-        """Encuadra la ruta: el zoom se calcula solo con origen y destino.
-
-        Es el sustituto del zoom con la rueda. En lugar de que el usuario
-        controle un factor, la vista se ajusta al rectangulo que contiene la
-        trayectoria, de modo que los dos puntos de la ruta quedan siempre
-        visibles sin tener que desplazar el mapa a mano. Con una sola parada se
-        ve el mundo entero; con una ruta corta se acerca hasta el limite de
-        `ESCALA_MAXIMA_AUTOMATICA`.
-        """
-        puntos = [(a.lat, a.lon) for a in (self.ruta[0], self.ruta[-1])] if self.ruta else []
-        if not puntos:
-            self.mapa.vista = TransformacionVista()
-            self._dibujar_todo()
-            if anunciar:
-                self._consola("Sin ruta: vista general (1.00x).")
-            return
-        escala = self.mapa.encuadrar_puntos(puntos, ESCALA_MAXIMA_AUTOMATICA)
-        self._dibujar_todo()
-        if anunciar:
-            orientes = " y ".join(a.iata for a in (self.ruta[0], self.ruta[-1]))
-            self._consola(f"Ruta {orientes} encuadrada automaticamente "
-                          f"(acercamiento {escala:.2f}x).")
 
     def _al_soltar_tecla(self, evento: tk.Event) -> None:
         self.teclas_pulsadas.discard((evento.keysym or "").lower())
@@ -1080,14 +1438,14 @@ class SimuladorMapa:
         self._id_bucle_manual = self.root.after(tema.MS_REPETICION_TECLA, self._bucle_manual)
 
     def _desplazar_manual(self, dx: float, dy: float) -> None:
-        x, y = self.mapa.a_pantalla(self.manual_lat, self.manual_lon)
+        x, y = self.mapa.a_pantalla(self.manual_lat, self.manual_lon, repetir=True)
         grados = self.mapa.a_grados(self._acotar_al_mapa(x + dx, y + dy))
         if grados is not None:
             self._fijar_posicion_manual(grados[0], grados[1])
 
     def iniciar_arrastre(self, evento: tk.Event) -> None:
         """Captura el punto de agarre: sin esto el avion 'salta' al cursor."""
-        x, y = self.mapa.a_pantalla(self.manual_lat, self.manual_lon)
+        x, y = self.mapa.a_pantalla(self.manual_lat, self.manual_lon, repetir=True)
         self.arrastrando = True
         self._offset_arrastre = (x - evento.x, y - evento.y)
         self.acciones += 1
@@ -1120,7 +1478,7 @@ class SimuladorMapa:
                 self.manual_ultima_pos[0], self.manual_ultima_pos[1], lat, lon)
         self.manual_lat, self.manual_lon = lat, lon
         self.manual_ultima_pos = (lat, lon)
-        x, y = self.mapa.a_pantalla(lat, lon)
+        x, y = self.mapa.a_pantalla(lat, lon, repetir=True)
         self._ubicar_avion(self.avion_manual, self.area_manual, x, y, self.rumbo_manual)
         self._programar_refresco()
 
@@ -1144,42 +1502,40 @@ class SimuladorMapa:
                         tramos=max(0, len(self.ruta) - 1))
 
     def _actualizar_paneles(self) -> None:
-        completadas = self.registro.por_modo("AUTO")
-        auto = completadas[-1] if completadas else self._medicion_auto_actual()
-        tramo_actual = ""
+        # --- panel de vuelo automatico --------------------------------
+        distancia_total = geo.longitud_ruta([(a.lat, a.lon) for a in self.ruta])
+        vel_kmh = self._velocidad_avion_kmh()
+        pos_auto = f"{self.auto_lat:+.2f}°, {self.auto_lon:+.2f}°"
         if self.vuelo_en_curso and self.segmento < len(self.ruta) - 1:
             origen, destino = self.ruta[self.segmento], self.ruta[self.segmento + 1]
-            tramo_actual = f"tramo       {origen.iata} → {destino.iata}\n"
+            tramo_txt = f"tramo       {origen.iata} → {destino.iata}\n"
+            dist_rest = self._distancia_restante()
+            linea_dist = (f"distancia   {geo.formatear_distancia(distancia_total)}"
+                          f"  (rest. {geo.formatear_distancia(dist_rest)})\n")
+            linea_tiempo = (f"tiempo est. {self._tiempo_estimado(distancia_total)}"
+                            f"  (rest. {self._tiempo_estimado(dist_rest)})\n")
         else:
-            tramo_actual = f"tramos      {auto.tramos}\n"
+            tramos = max(0, len(self.ruta) - 1)
+            tramo_txt = f"tramos      {tramos}\n"
+            linea_dist = f"distancia   {geo.formatear_distancia(distancia_total)}\n"
+            linea_tiempo = f"tiempo est. {self._tiempo_estimado(distancia_total)}\n"
         self.panel_auto["texto"].configure(text=(
-            tramo_actual
-            + f"distancia   {geo.formatear_distancia(auto.distancia_km)}\n"
-            + f"tiempo      {auto.duracion()}\n"
-            + f"velocidad   {auto.velocidad_kmh:,.0f} km/h"))
+            tramo_txt
+            + linea_dist
+            + linea_tiempo
+            + f"velocidad   {vel_kmh:,.0f} km/h\n"
+            + f"posicion    {pos_auto}"))
 
+        # --- panel de control manual ----------------------------------
         hechas = self.registro.por_modo("MANUAL")
         manual = hechas[-1] if hechas else self._medicion_manual()
-        grados = self.mapa.a_grados(self.mapa.a_pantalla(self.manual_lat, self.manual_lon))
+        grados = self.mapa.a_grados(self.mapa.a_pantalla(self.manual_lat, self.manual_lon, repetir=True))
         posicion = f"{grados[0]:+.2f}°, {grados[1]:+.2f}°" if grados else "fuera del mapa"
         self.panel_manual["texto"].configure(text=(
             f"distancia   {geo.formatear_distancia(manual.distancia_km)}\n"
-            f"tiempo      {manual.duracion()}\n"
             f"acciones    {self.acciones} teclas + arrastres\n"
             f"giros       {self.correcciones} correcciones de rumbo\n"
             f"posicion    {posicion}"))
-
-        comparativa = self.registro.comparativa()
-        if comparativa:
-            self.panel_comparativa["texto"].configure(text=(
-                f"auto        {comparativa['auto_s_por_1000km']:.2f} s por 1000 km\n"
-                f"manual      {comparativa['manual_s_por_1000km']:.2f} s por 1000 km\n"
-                f"manual es {comparativa['manual_es_x_mas_lento']:.1f} veces mas lento\n"
-                f"ventaja automatica: {comparativa['ventaja_automatica_pct']:.0f} %"))
-        else:
-            self.panel_comparativa["texto"].configure(text=(
-                "Se requiere una ejecucion de cada modo\n"
-                "para comparar la eficiencia (s / 1000 km)."))
 
     def _programar_refresco(self) -> None:
         if self._id_refresco is None:
@@ -1195,7 +1551,9 @@ class SimuladorMapa:
         self.boton_iniciar.configure(state="disabled" if volando else "normal")
         self.boton_pausar.configure(state="normal" if volando else "disabled",
                                     text="Pausar")
-        self.boton_detener.configure(state="normal" if volando else "disabled")
+        hay_ruta = bool(self.ruta and len(self.ruta) >= 2)
+        self.boton_reiniciar_vuelo.configure(
+            state="normal" if (volando or hay_ruta) else "disabled")
 
     def _consola(self, mensaje: str, error: bool = False) -> None:
         self.consola.configure(text=("AVISO:  " if error else ">  ") + mensaje,

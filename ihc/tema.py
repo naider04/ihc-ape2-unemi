@@ -25,6 +25,21 @@ PAIS = "#16304d"
 PAIS_HOVER = "#22507d"
 ETIQUETA_PAIS = "#6f8db0"
 
+# --- Cuadricula de meridianos y paralelos ---------------------------------
+# Clara a proposito: la capa va encima de la imagen de fondo, que es brillante
+# (mar de (1,104,174) y tierra de (98,147,35)), y una linea oscura se perderia
+# sobre ella. La jerarquia la dan el grosor y el trazo, no el tono: la malla de
+# 30 grados va continua, la de 15 con puntos suspensivos, como en cartografia.
+REJILLA_MAYOR = "#e2ecf8"
+REJILLA_MENOR = "#b9cee6"
+REJILLA_ETIQUETA = "#f2f7ff"
+# Globo de la esquina: disco casi negro para que la esfera se lea sobre el mapa
+# y su malla, mas clara, se distinga de la rejilla plana que tiene debajo.
+ESFERA_FONDO = "#08131f"
+ESFERA_MALLA = "#5c86b4"
+ESFERA_MALLA_FUERTE = "#a8c6e4"
+ESFERA_BORDE = "#31506f"
+
 # --- Vuelo automatico (naranja) y manual (azul): distinguishable en
 #     escala de grises y para las formas de daltonismo mas comunes.
 AUTO = "#ff9f1c"

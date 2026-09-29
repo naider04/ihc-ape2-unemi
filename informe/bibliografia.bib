@@ -1,0 +1,58 @@
+# Bibliografía del proyecto.
+#
+# La consume pandoc desde la cabecera de contenido_fuente.md (`bibliography:
+# bibliografia.bib`) y el marcador `[BIBLIOGRAPHY]` de la sección 6 se
+# reemplaza por la lista generada a partir de estas entradas. Para citar una
+# entrada en el texto: `[@clave]`.
+#
+# Cualquier campo entre llaves se puede escribir sin llaves si no lleva
+# caracteres especiales.
+
+@book{pressman2005ingenieria,
+  author    = {Pressman, Roger S.},
+  title     = {Ingeniería de software: un enfoque práctico},
+  edition   = {6},
+  year      = {2005},
+  publisher = {McGraw-Hill},
+  address   = {Ciudad de México},
+  isbn      = {970-10-5729-4}
+}
+
+@misc{pythonTkinter,
+  author       = {{Python Software Foundation}},
+  title        = {{tkinter} — Interfaces gráficas de usuario en Python},
+  howpublished = {Documentación oficial de Python 3},
+  url          = {https://docs.python.org/3/library/tkinter.html},
+  urldate      = {2026-09-28}
+}
+
+@misc{ourairports2024,
+  author       = {{OurAirports}},
+  title        = {OurAirports Data: base de datos de aeropuertos},
+  year         = {2024},
+  howpublished = {Conjunto de datos en CSV, abierto y de dominio público},
+  url          = {https://ourairports.com/data/},
+  urldate      = {2026-09-28},
+  note         = {Descargado por \texttt{herramientas/preparar\_datos.py}}
+}
+
+@misc{naturalearth2024,
+  author       = {{Natural Earth}},
+  title        = {1:50m Cultural Vectors: Admin 0 Countries},
+  year         = {2024},
+  howpublished = {Conjunto de datos vectoriales, de dominio público},
+  url          = {https://www.naturalearthdata.com/},
+  urldate      = {2026-09-28},
+  note         = {Contornos costeros superpuestos al mapa base}
+}
+
+@article{sinnott1984virtudes,
+  author  = {Sinnott, Roger W.},
+  title   = {Virtues of the Haversine},
+  journal = {Sky and Telescope},
+  volume  = {68},
+  number  = {2},
+  pages   = {159},
+  month   = {aug},
+  year    = {1984}
+}

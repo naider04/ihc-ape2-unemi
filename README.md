@@ -7,6 +7,8 @@ La version 2.0 corrige los defectos de la muestra del docente y anade
 capacidades de navegacion y medicion que permiten comparar, con datos, el
 control manual contra el vuelo automatico.
 
+Codigo fuente: <a href="https://github.com/naider04/ihc-ape2-unemi" style="color: blue; text-decoration: underline;">github.com/naider04/ihc-ape2-unemi</a>
+
 ## Que hace y en que se diferencia de la muestra
 
 | Aspecto | Muestra original | Version 2.0 |
@@ -22,7 +24,7 @@ control manual contra el vuelo automatico.
 | Modelo de tarea | No habia modelo | Bucle de planificacion, ejecucion, verificacion (GOMS-like) |
 | Evidencia | Ninguna | Telemetria por modo y comparativa de eficiencia en pantalla |
 | Tamano de ventana | Alto fijo que se salia de la pantalla | Se ajusta a la pantalla del usuario |
-| Pruebas | Ninguna | 90 pruebas automaticas |
+| Pruebas | Ninguna | 136 pruebas automaticas |
 
 ## Requisitos
 
@@ -105,7 +107,45 @@ aeropuerto solo añadía elementos al lienzo sin aportar información.
 | Arrastrar el avion | Mueve el avion conservando el punto de agarre |
 | `R` | Reencuadra la ruta (zoom automatico) |
 | **Encuadrar ruta** | Igual que `R`, con el boton |
+| `G` o **Cuadrícula** | Enciende y apaga la malla de meridianos y paralelos |
 | `Esc` | Detiene el vuelo |
+
+### La cuadrícula: el mapa y la esfera
+
+El botón **Cuadrícula** (o la tecla `G`) superpone dos capas que son la misma
+malla vista de dos maneras:
+
+| Capa | Qué dibuja | Por qué |
+|---|---|---|
+| Malla del mapa | Meridianos y paralelos cada 30°, continuos, y cada 15°, punteados, con el rótulo en el borde (0°, 30° N, 90° E…) | Referencia real de coordenadas. **Salen rectos**, y esa rectitud es la proyección: el cilindro se desarrolla sin curvar |
+| Globo de la esquina | La misma malla sobre una esfera en proyección ortográfica, centrada en lo que se está mirando | Aquí sí se curven: son arcos y el disco es un círculo, no una elipse |
+
+Las dos juntas cuentan la deformación sin tener que enunciarla: el mapa es la
+esfera desplegada, y al desplegarla las latitudes altas se estiran.
+
+Decisiones que no son obvias:
+
+- **La rejilla curva no va superpuesta al mapa.** Dibujada encima, la curva de
+  un meridiano caería a grados de la costa que dice representar y parecería un
+  error de dibujo. En un globo aparte, con su rótulo «esfera · ortográfica»,
+  se lee como lo que es: otra proyección.
+- **Nace apagada.** Compite con la costa de la imagen de fondo, y las
+  10 capturas del manual están hechas sin ella. Encendida, el mapa se lee como
+  un mapa coordenado; apagada, como un mapa para orientarse.
+- **El globo se ancla al mapa, no a la ventana.** El lienzo es ancho y bajo
+  (1.306×369 en un portátil), así que la lámina de proporción 1,97 queda
+  centrada y sobran márgenes negros a los lados: en la esquina de la ventana el
+  globo quedaría flotando a 150 px del mapa.
+- **Los rótulos se apagan por debajo de 60 px de separación.** En una ventana
+  estrecha los 30° ocupan 47 px y el borde se llena de letras pegadas.
+- **La malla se cachea en píxeles de mapa** y en cada fotograma solo se le
+  aplica `pantalla = x·k + c`, como con los contornos. Con la capa puesta, el
+  redibujo pasa de 20,5 ms a 34,5 ms en la vista del mundo ampliada; apagada no
+  se paga nada.
+- **El limbo de la esfera necesita un margen de 1e−9** en `cos_c`. El meridiano
+  que cae a exactamente 90° del centro está en el horizonte, y por redondeo
+  `cos_c` sale en 1e−17: sin el margen se dibujaría entero y por dentro del
+  disco.
 
 ## Como esta organizado el codigo
 
@@ -116,6 +156,7 @@ ihc/
   app.py            interfaz, bucle de eventos, modelo de tarea
   geo.py            haversine, rumbos, grandes circulos
   proyeccion.py     proyeccion, calibracion y encuadre automatico
+  cuadricula.py     meridianos y paralelos, en el mapa y en la esfera
   datos.py          carga de aeropuertos y paises, con modo degradado
   telemetria.py     mediciones, estadisticos y comparativa de eficiencia
   tema.py           paleta, fuentes y tiempos
@@ -124,7 +165,7 @@ herramientas/
   calibrar_mapa.py          audita la proyeccion contra la imagen antigua
   verificar_georreferenciado.py  comprueba que el mapa es fiel
   capturar_evidencia.py     genera las capturas del manual
-tests/                      90 pruebas automaticas
+tests/                      136 pruebas automaticas
 data/                       datos ya procesados (funciona sin internet)
 capturas/                   imagenes generadas para el documento
 ```
@@ -132,7 +173,7 @@ capturas/                   imagenes generadas para el documento
 ## Herramientas de verificacion
 
 ```bash
-.venv/bin/python -m pytest tests/ -q                        # 90 pruebas
+.venv/bin/python -m pytest tests/ -q                        # 136 pruebas
 .venv/bin/python herramientas/verificar_georreferenciado.py # fidelidad del mapa
 .venv/bin/python herramientas/calibrar_mapa.py              # audita la imagen antigua
 .venv/bin/python herramientas/capturar_evidencia.py         # regenera capturas
